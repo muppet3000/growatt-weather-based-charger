@@ -1,3 +1,2 @@
-pyowm
 growattServer
 forecast_solar

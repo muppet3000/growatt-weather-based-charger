@@ -1,27 +1,27 @@
 #!/usr/local/bin/python3
 
 import growattServer
-import configparser
-from datetime import datetime,date,timedelta
-from statistics import mean
-import math
-
-import time
-
-import requests
-import urllib.parse
-import asyncio
 from forecast_solar import ForecastSolar, ForecastSolarRatelimit
 
+import asyncio
+import configparser
+import logging
+import math
+import requests
+import time
+import urllib.parse
 import shutil, sys, os
+
+from datetime import datetime,date,timedelta
+from statistics import mean
 
 def get_lat_long(address):
   url = 'https://nominatim.openstreetmap.org/search/' + urllib.parse.quote(address) +'?format=json'
   response = requests.get(url).json()
   return response[0]
 
-async def get_fake_generation_forecast(solar_forecast_config, off_peak_start_time, off_peak_end_time, output_string):
-  output_string.append("*****USING FAKE DATA*****")
+async def get_fake_generation_forecast(solar_forecast_config, off_peak_start_time, off_peak_end_time, logger):
+  logger.info("*****USING FAKE DATA*****")
 
   return {
     datetime.strptime('2022-06-28 04:54:00', '%Y-%m-%d %H:%M:%S'): 0,
@@ -45,7 +45,7 @@ async def get_fake_generation_forecast(solar_forecast_config, off_peak_start_tim
     datetime.strptime('2022-06-28 21:05:00', '%Y-%m-%d %H:%M:%S'): 3,
   }
 
-async def get_generation_forecast(solar_forecast_config, off_peak_start_time, off_peak_end_time, output_string):
+async def get_generation_forecast(solar_forecast_config, off_peak_start_time, off_peak_end_time, logger, output_string):
   lat_long = get_lat_long(solar_forecast_config.get('location'))
 
   async with ForecastSolar(latitude=lat_long["lat"],
@@ -57,12 +57,12 @@ async def get_generation_forecast(solar_forecast_config, off_peak_start_time, of
     try:
       estimate = await forecast.estimate()
     except ForecastSolarRatelimit as err:
-      output_string.append("Ratelimit reached")
-      output_string.append(f"Rate limit resets at {err.reset_at}")
+      logger.error("Ratelimit reached")
+      logger.error(f"Rate limit resets at {err.reset_at}")
       reset_period = err.reset_at - datetime.now(timezone.utc)
       # Strip microseconds as they are not informative
       reset_period -= timedelta(microseconds=reset_period.microseconds)
-      output_string.append(f"That's in {reset_period}")
+      logger.error.append(f"That's in {reset_period}")
       return None
 
     now = datetime.now()
@@ -71,11 +71,11 @@ async def get_generation_forecast(solar_forecast_config, off_peak_start_time, of
     today_off_peak_start = now.replace(hour=int(off_peak_start_splits[0]), minute=int(off_peak_start_splits[1]), second=0, microsecond=0)
 
     date_for_forecast = date.today()
-    output_string.append("Now: %s, Off-peak-start: %s" %(now, today_off_peak_start))
+    log_and_output(logger, output_string, "Now: %s, Off-peak-start: %s" %(now, today_off_peak_start))
     if now > today_off_peak_start:
       date_for_forecast = date_for_forecast + timedelta(days = 1)
 
-    output_string.append("Date for forecast: %s" % (date_for_forecast))
+    log_and_output(logger, output_string, "Date for forecast: %s" % (date_for_forecast))
 
     confidence_factor = float(solar_forecast_config.get('confidence'))
     wh_hours_forecast = {}
@@ -92,18 +92,17 @@ def get_grid_neutral_time(average_load_w, generation_forecast):
 
   return None # Default to None i.e. we're never grid netural
 
-def get_grid_neutral_wh(grid_neutral_time, today_off_peak_end, average_load_w, output_string):
+def get_grid_neutral_wh(grid_neutral_time, today_off_peak_end, average_load_w, logger, output_string):
   duration_on_battery = datetime.combine(date.min, grid_neutral_time.time()) - datetime.combine(date.min, today_off_peak_end.time())
   hours = duration_on_battery.seconds/3600
   wh_required = hours * average_load_w
 
-  output_string.append("Grid Neutral Time: %s" % (grid_neutral_time))
-  output_string.append("%swH required to get to grid neutral (%s hours @ %sw)" %(wh_required, hours, average_load_w))
-  output_string.append("")
+  log_and_output(logger, output_string, "Grid Neutral Time: %s" % (grid_neutral_time))
+  logger.info("%swH required to get to grid neutral (%s hours @ %sw)" %(wh_required, hours, average_load_w))
 
   return wh_required
 
-def get_surplus_generation_for_battery(generation_forecast, average_load_w, maximum_charge_rate_w, output_string):
+def get_surplus_generation_for_battery(generation_forecast, average_load_w, maximum_charge_rate_w, logger, output_string):
   total_generation = 0
   surplus_generation_for_battery = 0
   for forecast in generation_forecast.values():
@@ -114,9 +113,8 @@ def get_surplus_generation_for_battery(generation_forecast, average_load_w, maxi
         hour_to_battery = maximum_charge_rate_w
       surplus_generation_for_battery += hour_to_battery
 
-  output_string.append("Total generation: %.2fwH" % (total_generation))
-  output_string.append("Surplus Generation for Battery: %.2fwH" % (surplus_generation_for_battery))
-  output_string.append("")
+  log_and_output(logger, output_string, "Total generation: %.2fwH" % (total_generation), True)
+  logger.info("Surplus Generation for Battery: %.2fwH" % (surplus_generation_for_battery))
   return surplus_generation_for_battery
 
 def convert_wh_to_battery_pct(amount_to_charge_inc_soc, battery_capacity_wh):
@@ -130,9 +128,9 @@ def growatt_get_device_info(growatt_api, login_response):
 
   return {'plant_id': plant_id, 'device_sn': device_sn}
 
-def get_current_charge(growatt_api, plant_id, device_sn, output_string):
+def get_current_charge(growatt_api, plant_id, device_sn, logger):
   mix_status = growatt_api.mix_system_status(device_sn, plant_id)
-  output_string.append("SOC for Plant: %s, Device: %s - %s%%" % (plant_id,device_sn,mix_status['SOC']))
+  logger.info("SOC for Plant - %s, Device - %s: %s%%" % (plant_id,device_sn,mix_status['SOC']))
   soc_pct = float(mix_status['SOC'])
   return soc_pct
 
@@ -144,22 +142,22 @@ def get_offpeak_duration(off_peak_start_time, off_peak_end_time):
   time_delta=datetime_end-datetime_start
   return time_delta.seconds/3600 #Convert diff into minutes
 
-def set_growatt_datetime(growatt_api, gw_device_sn, output_string):
+def set_growatt_datetime(growatt_api, gw_device_sn, logger, output_string):
   now = datetime.now()
   dt_string = now.strftime("%Y-%m-%d %H:%M:%S")
   time_settings={
     'param1': dt_string
   }
-  output_string.append("Setting inverter time to: %s" %(dt_string))
+  log_and_output(logger, output_string, "Setting inverter time to: %s" %(dt_string))
   response = growatt_api.update_mix_inverter_setting(gw_device_sn, 'pf_sys_year', time_settings)
 
   resp_string = "Unsuccessful"
   if response['success'] == True:
     resp_string = "Successful"
-  output_string.append("Growatt response to setting time: %s" %(resp_string))
+  log_and_output(logger, output_string, "   - %s" %(resp_string), True)
 
-def configure_charge_settings(growatt_api, gw_device_sn, off_peak_start_time, off_peak_end_time, charge_rate_as_pct, target_charge, output_string):
-  output_string.append("Configuring Charger - Device: %s, Charge-Start: %s, Charge-End: %s, Charge Rate(%%): %s, Target Charge(%%): %s" % 
+def configure_charge_settings(growatt_api, gw_device_sn, off_peak_start_time, off_peak_end_time, charge_rate_as_pct, target_charge, logger, output_string):
+  log_and_output(logger, output_string, "Configuring Charger - Device: %s, Charge-Start: %s, Charge-End: %s, Charge Rate(%%): %s, Target Charge(%%): %s" % 
           (gw_device_sn, off_peak_start_time, off_peak_end_time, int(charge_rate_as_pct), int(target_charge)))
 
   off_peak_start_splits = off_peak_start_time.split(":")
@@ -179,29 +177,39 @@ def configure_charge_settings(growatt_api, gw_device_sn, off_peak_start_time, of
   resp_string = "Unsuccessful"
   if response['success'] == True:
     resp_string = "Successful"
-  output_string.append("Growatt response to setting charge settings: %s" %(resp_string))
+  log_and_output(logger, output_string, "   - %s" %(resp_string), True)
 
-def exit_printing(output_string, errored=False):
+def log_and_output(logger, output_string, print_string, new_line_after = False):
+  logger.info(print_string)
+  output_string.append(print_string)
+  if new_line_after:
+    output_string.append("")
+
+def exit_printing(output_string):
   now = datetime.now()
   dt_string = now.strftime("%Y-%m-%d-%H:%M:%S")
 
-  with open('/opt/growatt-charger/output/'+dt_string+'.txt', 'w') as f:
-    for line in output_string:
-      f.write(line)
-      f.write("\n")
-
   filename="latest.txt"
-  if errored:
-    filename = "error.txt"
-
-  with open('/opt/growatt-charger/output/' + filename, 'w') as f:
+  with open('/opt/growatt-charger/output/latest.txt', 'w') as f:
     for line in output_string:
-      print(line)
       f.write(line)
       f.write("\n")
 
 async def main():
   #MAIN LOGIC STARTS HERE
+  logger = logging.getLogger("growatt-charger")
+  logger.setLevel(logging.INFO)
+  
+  formatter = logging.Formatter("%(asctime)s %(levelname)s: %(message)s", "%Y-%m-%d %H:%M:%S")
+
+  sh = logging.StreamHandler()
+  sh.setFormatter(formatter)
+  logger.addHandler(sh)
+
+  fh = logging.FileHandler("/opt/growatt-charger/logs/growatt-charger.log", )
+  fh.setFormatter(formatter)
+  logger.addHandler(fh)
+
   config = configparser.ConfigParser()
 
   output_string = []
@@ -209,9 +217,8 @@ async def main():
   #Use the config file, if it doesn't exist, copy the default one into the conf directory
   config_file="/opt/growatt-charger/conf/growatt-charger.ini"
   if not os.path.exists(config_file):
-    output_string += "Config file does not exist in /opt/growatt-charger/conf/, copying the default one to be populated by the user"
+    logger.error("Config file does not exist in /opt/growatt-charger/conf/, copying the default one to be populated by the user")
     shutil.copyfile("/opt/growatt-charger/defaults/growatt-charger-default.ini", config_file)
-    exit_printing(output_string)
     sys.exit(0)
 
   #Parse the configuration   
@@ -234,13 +241,11 @@ async def main():
     gw_password = os.getenv('GROWATT_PASSWORD')
 
   if gw_username == "" or gw_username == None:
-    output_string += "No growatt username provided either use the 'username' parameter in the config file or expose the GROWATT_USERNAME environment variable"
-    exit_printing(output_string)
+    logger.error("No growatt username provided either use the 'username' parameter in the config file or expose the GROWATT_USERNAME environment variable")
     sys.exit(1)
 
   if gw_password == "" or gw_password == None:
-    output_string +=  "No growatt password provided either use the 'password' parameter in the config file or expose the GROWATT_PASSWORD environment variable"
-    exit_printing(output_string)
+    logger.error("No growatt password provided either use the 'password' parameter in the config file or expose the GROWATT_PASSWORD environment variable")
     sys.exit(1)
 
   gw_plant_id = growatt_config.get("plant_id", "")
@@ -252,6 +257,8 @@ async def main():
 
   solar_forecast_config = config['forecast.solar']
 
+  generation_forecast = None
+
   attempts = 0
   max_attempts = 3
   success = False
@@ -261,8 +268,7 @@ async def main():
       growatt_api = growattServer.GrowattApi()
       gw_login_response = growatt_api.login(gw_username, gw_password)
       if gw_login_response['success'] != True:
-        output_string +=  "Unable to login to Growatt, aborting"
-        exit_printing(output_string)
+        logger.error("Unable to login to Growatt, aborting")
         sys.exit(1)
 
       now = datetime.now()
@@ -271,12 +277,13 @@ async def main():
       today_off_peak_start = now.replace(hour=int(off_peak_start_splits[0]), minute=int(off_peak_start_splits[1]), second=0, microsecond=0)
       today_off_peak_end = now.replace(hour=int(off_peak_end_splits[0]), minute=int(off_peak_end_splits[1]), second=0, microsecond=0)
 
-      output_string.append("Time is %s, attempting to configure charging..." %(datetime.now()))
-      output_string.append("")
+      log_and_output(logger, output_string, "Configuration time: %s" %(datetime.now().strftime("%Y-%m-%d %H:%M:%S")), True)
 
       if now < today_off_peak_start or now > today_off_peak_end:
-        generation_forecast = await get_generation_forecast(solar_forecast_config, off_peak_start_time, off_peak_end_time, output_string)
-        #generation_forecast = await get_fake_generation_forecast(solar_forecast_config, off_peak_start_time, off_peak_end_time, output_string)
+        #Only get the generation forecast if we don't already have it - saves us hitting our quota of queries per hour
+        if generation_forecast == None:
+         #generation_forecast = await get_generation_forecast(solar_forecast_config, off_peak_start_time, off_peak_end_time, logger, output_string)
+         generation_forecast = await get_fake_generation_forecast(solar_forecast_config, off_peak_start_time, off_peak_end_time, logger)
 
         #If grid_neutral_time is None then we're never grid-neutral or if we don't receive a forecast we should assume the worst, defaulting to max percentage
         target_charge = max_chg_pct
@@ -285,39 +292,37 @@ async def main():
         if generation_forecast != None:
           grid_neutral_time = get_grid_neutral_time(average_load_w, generation_forecast)
           if grid_neutral_time != None:
-            wh_required_to_make_grid_neutral = get_grid_neutral_wh(grid_neutral_time, today_off_peak_end, average_load_w, output_string)
+            wh_required_to_make_grid_neutral = get_grid_neutral_wh(grid_neutral_time, today_off_peak_end, average_load_w, logger, output_string)
 
-            wh_surplus_generation = get_surplus_generation_for_battery(generation_forecast, average_load_w, maximum_charge_rate_w, output_string)
+            wh_surplus_generation = get_surplus_generation_for_battery(generation_forecast, average_load_w, maximum_charge_rate_w, logger, output_string)
 
             #If we don't generate enough to make it to full, get the excess during the off-peak window
             extra_wh_needed = 0
             if wh_surplus_generation < battery_capacity_wh:
               extra_wh_needed = battery_capacity_wh - wh_surplus_generation
-            output_string.append("Extra to draw from grid to ensure full by end-of-day: %.2fwH" % (extra_wh_needed))
+            logger.info("Extra to draw from grid to ensure full by end-of-day: %.2fwH" % (extra_wh_needed))
 
             wh_to_draw_during_off_peak = wh_required_to_make_grid_neutral + extra_wh_needed
-            output_string.append("wH to draw during off-peak: %.2fwH" % (wh_to_draw_during_off_peak))
+            logger.info("wH to draw during off-peak: %.2fwH" % (wh_to_draw_during_off_peak))
 
             soc_as_wh = (soc_chg_pct/100) * battery_capacity_wh
-            output_string.append("SOC as wH: %s" %(soc_as_wh))
+            logger.info("Baseline SoC as wH: %.2f" %(soc_as_wh))
 
             amount_to_charge_inc_soc = wh_to_draw_during_off_peak + soc_as_wh
-            output_string.append("Amount to charge including SoC: %.2f" % (amount_to_charge_inc_soc))
-            output_string.append("")
+            logger.info("Amount to charge including SoC: %.2f" % (amount_to_charge_inc_soc))
 
             target_charge = convert_wh_to_battery_pct(amount_to_charge_inc_soc, battery_capacity_wh)
-            output_string.append("Pct to charge to: %s" % (target_charge))
+            logger.info("Pct to charge to: %s" % (target_charge))
           else:
-            output_string.append("Never grid neutral - setting target charge to 100%")
+            log_and_output(logger, output_string, "Never grid neutral - setting target charge to 100%")
         else:
-          output_string.append("No forecast received - setting target charge to 100%")
+          log_and_output(logger, output_string, "No forecast received - setting target charge to 100%")
 
         if target_charge < min_chg_pct:
           target_charge = min_chg_pct
         if target_charge > max_chg_pct:
           target_charge = max_chg_pct
-        output_string.append("Refactored pct to charge to based on min/max allowed: %s" % (target_charge))
-        output_string.append("")
+        logger.info("Refactored pct to charge to based on min/max allowed: %s" % (target_charge))
 
         #These are optional, so if they're not provided we get them ourselves
         if gw_plant_id == "" and gw_device_sn == "":
@@ -325,20 +330,20 @@ async def main():
           gw_plant_id = gw_device_info['plant_id']
           gw_device_sn = gw_device_info['device_sn']
 
-        current_charge = get_current_charge(growatt_api, gw_plant_id, gw_device_sn, output_string)
+        current_charge = get_current_charge(growatt_api, gw_plant_id, gw_device_sn, logger)
         pct_growth = target_charge - current_charge
-        output_string.append("Growth as %%: %s" % (pct_growth))
+        log_and_output(logger, output_string, "Current SoC: %s%%, Target SoC: %s%%, Growth: %s" % (current_charge, target_charge, pct_growth), True)
 
         if pct_growth < 0:
           pct_growth = 0
 
         growth_as_wh = battery_capacity_wh * (pct_growth/100.0)
-        output_string.append("Growth as wh: %.2f" %(growth_as_wh))
+        logger.info("Growth as wh: %.2f" %(growth_as_wh))
 
         off_peak_duration_hours = get_offpeak_duration(off_peak_start_time, off_peak_end_time)
 
         charge_rate_in_w = growth_as_wh / off_peak_duration_hours
-        output_string.append("Charge rate in w: %.2f" % (charge_rate_in_w))
+        logger.info("Charge rate in w: %.2f" % (charge_rate_in_w))
 
         charge_rate_as_pct = 0
         if charge_rate_in_w > 0:
@@ -350,11 +355,9 @@ async def main():
         if charge_rate_as_pct > 100:
           charge_rate_as_pct = 100.00
 
-        output_string.append("Charge rate as %%: %.2f" % (charge_rate_as_pct))
-        output_string.append("")
+        logger.info("Charge rate as %%: %.2f" % (charge_rate_as_pct))
 
-        set_growatt_datetime(growatt_api, gw_device_sn, output_string)
-        output_string.append("")
+        set_growatt_datetime(growatt_api, gw_device_sn, logger, output_string)
 
         #Returns false if the charge rate is below 5%
         if charge_rate_as_pct < 5:
@@ -365,28 +368,31 @@ async def main():
           """
           charge_rate_as_pct = 100
 
-        configure_charge_settings(growatt_api, gw_device_sn, off_peak_start_time, off_peak_end_time, charge_rate_as_pct, target_charge, output_string)
-        output_string.append("")
+        configure_charge_settings(growatt_api, gw_device_sn, off_peak_start_time, off_peak_end_time, charge_rate_as_pct, target_charge, logger, output_string)
       else:
-        output_string.append("Within off-peak window - no reconfiguration to happen")
+        log_and_output(logger, output_string, "Within off-peak window - no reconfiguration to happen")
       success = True
 
     except Exception as e:
-      output_string.append("Caught an exception, oh dear....")
-      output_string.append("Please check your configuration values also e.g. you've updated the default values")
+      logger.error("Caught an exception, oh dear....")
+      logger.error("Please check your configuration values also e.g. you've updated the default values")
+      logger.error(str(e))
       output_string.append(str(e))
       if attempts < max_attempts-1:
-        output_string.append("Sleeping for 10 seconds before retry")
-        output_string.append("")
+        logger.info("Sleeping for 10 seconds before retry")
+        output_string = []
         time.sleep(10)
+      else:
+        logger.info("Max attempts reached, giving up")
 
     attempts += 1
+    logger.info("")
+
+  exit_printing(output_string)
 
   if success:
-    exit_printing(output_string)
     sys.exit(0)
   else:
-    exit_printing(output_string, True)
     sys.exit(1)
 
 

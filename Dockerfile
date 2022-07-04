@@ -11,5 +11,6 @@ COPY bin /opt/growatt-charger/bin
 
 VOLUME /opt/growatt-charger/conf
 VOLUME /opt/growatt-charger/output
+VOLUME /opt/growatt-charger/logs
 
-ENTRYPOINT ["/opt/growatt-charger/bin/solar_forecast.py"]
+ENTRYPOINT ["/opt/growatt-charger/bin/growatt-charger.py"]

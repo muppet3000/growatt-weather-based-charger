@@ -45,7 +45,7 @@ async def get_fake_generation_forecast(solar_forecast_config, off_peak_start_tim
     datetime.strptime('2022-06-28 21:05:00', '%Y-%m-%d %H:%M:%S'): 3,
   }
 
-async def get_generation_forecast(solar_forecast_config, off_peak_start_time, off_peak_end_time, logger, output_string):
+async def get_generation_forecast(solar_forecast_config, off_peak_start_time, off_peak_end_time, logger):
   lat_long = get_lat_long(solar_forecast_config.get('location'))
 
   async with ForecastSolar(latitude=lat_long["lat"],
@@ -71,11 +71,11 @@ async def get_generation_forecast(solar_forecast_config, off_peak_start_time, of
     today_off_peak_start = now.replace(hour=int(off_peak_start_splits[0]), minute=int(off_peak_start_splits[1]), second=0, microsecond=0)
 
     date_for_forecast = date.today()
-    log_and_output(logger, output_string, "Now: %s, Off-peak-start: %s" %(now, today_off_peak_start))
+    logger.info("Now: %s, Off-peak-start: %s" %(now, today_off_peak_start))
     if now > today_off_peak_start:
       date_for_forecast = date_for_forecast + timedelta(days = 1)
 
-    log_and_output(logger, output_string, "Date for forecast: %s" % (date_for_forecast))
+    logger.info("Date for forecast: %s" % (date_for_forecast))
 
     confidence_factor = float(solar_forecast_config.get('confidence'))
     wh_hours_forecast = {}
@@ -282,8 +282,8 @@ async def main():
       if now < today_off_peak_start or now > today_off_peak_end:
         #Only get the generation forecast if we don't already have it - saves us hitting our quota of queries per hour
         if generation_forecast == None:
-         #generation_forecast = await get_generation_forecast(solar_forecast_config, off_peak_start_time, off_peak_end_time, logger, output_string)
-         generation_forecast = await get_fake_generation_forecast(solar_forecast_config, off_peak_start_time, off_peak_end_time, logger)
+         generation_forecast = await get_generation_forecast(solar_forecast_config, off_peak_start_time, off_peak_end_time, logger)
+         #generation_forecast = await get_fake_generation_forecast(solar_forecast_config, off_peak_start_time, off_peak_end_time, logger)
 
         #If grid_neutral_time is None then we're never grid-neutral or if we don't receive a forecast we should assume the worst, defaulting to max percentage
         target_charge = max_chg_pct

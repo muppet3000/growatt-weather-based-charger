@@ -265,7 +265,7 @@ async def main():
 
   while attempts < max_attempts and success == False:
     try:
-      growatt_api = growattServer.GrowattApi()
+      growatt_api = growattServer.GrowattApi(True)
       gw_login_response = growatt_api.login(gw_username, gw_password)
       if gw_login_response['success'] != True:
         logger.error("Unable to login to Growatt, aborting")

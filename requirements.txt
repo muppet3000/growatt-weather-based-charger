@@ -1,2 +1,2 @@
-growattServer
+growattServer >= 1.3.0
 forecast_solar

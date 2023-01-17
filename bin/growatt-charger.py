@@ -8,6 +8,8 @@ import configparser
 import logging
 import math
 import requests
+import random
+import string
 import time
 import urllib.parse
 import shutil, sys, os
@@ -265,7 +267,9 @@ async def main():
 
   while attempts < max_attempts and success == False:
     try:
-      growatt_api = growattServer.GrowattApi(True)
+      rand_num = random.randint(1,50)
+      rand_string = ''.join(random.choices(string.ascii_uppercase + string.digits, k=rand_num))
+      growatt_api = growattServer.GrowattApi(agent_identifier=rand_string)
       gw_login_response = growatt_api.login(gw_username, gw_password)
       if gw_login_response['success'] != True:
         logger.error("Unable to login to Growatt, aborting")

@@ -1,2 +1,2 @@
 growattServer >= 1.3.0
-forecast_solar
+forecast_solar == 2.3.0

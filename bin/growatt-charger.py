@@ -18,7 +18,7 @@ from datetime import datetime,date,timedelta
 from statistics import mean
 
 def get_lat_long(address):
-  url = 'https://nominatim.openstreetmap.org/search/' + urllib.parse.quote(address) +'?format=json'
+  url = 'https://nominatim.openstreetmap.org/search?q=' + urllib.parse.quote(address) +'&format=json'
   response = requests.get(url).json()
   return response[0]
 

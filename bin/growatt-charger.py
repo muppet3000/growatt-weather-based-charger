@@ -270,6 +270,7 @@ async def main():
       rand_num = random.randint(1,50)
       rand_string = ''.join(random.choices(string.ascii_uppercase + string.digits, k=rand_num))
       growatt_api = growattServer.GrowattApi(agent_identifier=rand_string)
+      growatt_api.server_url = "https://server.growatt.com/"
       gw_login_response = growatt_api.login(gw_username, gw_password)
       if gw_login_response['success'] != True:
         logger.error("Unable to login to Growatt, aborting")
